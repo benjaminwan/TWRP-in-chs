@@ -39,9 +39,6 @@ int twgr_text(int x, int y, const char *s);
 static inline int gr_text(int x, int y, const char *s)     { return gr_textEx(x, y, s, NULL); }
 int gr_measureEx(const char *s, void* font);
 static inline int gr_measure(const char *s)                { return gr_measureEx(s, NULL); }
-
-int ch_utf8_length(const char* s);
-int ch_utf8(const char* s);
 int getCharID(const char* s, void* pFont);
 
 int gr_getFontDetails(void* font, unsigned* cheight, unsigned* maxwidth);

@@ -2061,7 +2061,7 @@
 			<object type="checkbox">
 				<placement x="%col1_x%" y="%row2_text_y%" />
 				<font resource="font" color="%text_color%" />
-				<text>使用 rm -rf 命令代替格式话.</text>
+				<text>使用 rm -rf 命令代替格式化.</text>
 				<data variable="tw_rm_rf" />
 				<image checked="checkbox_true" unchecked="checkbox_false" />
 			</object>

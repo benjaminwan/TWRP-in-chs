@@ -37,17 +37,7 @@
 #else
 #include "font_tw_34x34.h"
 #endif
-#include "unicode_map.h"
-#include "zlib.h"
 #include <string.h>
-
-typedef unsigned int ucs4_t;
-#define RET_SHIFT_ILSEQ(n)  (-1-2*(n))
-#define RET_ILSEQ           RET_SHIFT_ILSEQ(0)
-#define RET_TOOFEW(n)       (-2-2*(n))
-#define RET_ILUNI      -1
-#define RET_TOOSMALL   -2
-
 
 #ifdef RECOVERY_BGRA
 #define PIXEL_FORMAT GGL_PIXEL_FORMAT_BGRA_8888
@@ -304,97 +294,53 @@ void gr_color(unsigned char r, unsigned char g, unsigned char b, unsigned char a
     gl->color4xv(gl, color);
 }
 
-static int utf8_mbtowc (ucs4_t *pwc, const unsigned char *s, int n)
+struct utf8_table {
+	int     cmask;
+	int     cval;
+	int     shift;
+	long    lmask;
+	long    lval;
+};
+
+static struct utf8_table utf8_table[] =
 {
-  unsigned char c = s[0];
+    {0x80,  0x00,   0*6,    0x7F,           0,         /* 1 byte sequence */},
+    {0xE0,  0xC0,   1*6,    0x7FF,          0x80,      /* 2 byte sequence */},
+    {0xF0,  0xE0,   2*6,    0xFFFF,         0x800,     /* 3 byte sequence */},
+    {0xF8,  0xF0,   3*6,    0x1FFFFF,       0x10000,   /* 4 byte sequence */},
+    {0xFC,  0xF8,   4*6,    0x3FFFFFF,      0x200000,  /* 5 byte sequence */},
+    {0xFE,  0xFC,   5*6,    0x7FFFFFFF,     0x4000000, /* 6 byte sequence */},
+    {0,						       /* end of table    */}
+};
 
-  if (c < 0x80) {
-    *pwc = c;
-    return 1;
-  } else if (c < 0xc2) {
-    return RET_ILSEQ;
-  } else if (c < 0xe0) {
-    if (n < 2)
-      return RET_TOOFEW(0);
-    if (!((s[1] ^ 0x80) < 0x40))
-      return RET_ILSEQ;
-    *pwc = ((ucs4_t) (c & 0x1f) << 6)
-           | (ucs4_t) (s[1] ^ 0x80);
-    return 2;
-  } else if (c < 0xf0) {
-    if (n < 3)
-      return RET_TOOFEW(0);
-    if (!((s[1] ^ 0x80) < 0x40 && (s[2] ^ 0x80) < 0x40
-          && (c >= 0xe1 || s[1] >= 0xa0)))
-      return RET_ILSEQ;
-    *pwc = ((ucs4_t) (c & 0x0f) << 12)
-           | ((ucs4_t) (s[1] ^ 0x80) << 6)
-           | (ucs4_t) (s[2] ^ 0x80);
-    return 3;
-  } else if (c < 0xf8 && sizeof(ucs4_t)*8 >= 32) {
-    if (n < 4)
-      return RET_TOOFEW(0);
-    if (!((s[1] ^ 0x80) < 0x40 && (s[2] ^ 0x80) < 0x40
-          && (s[3] ^ 0x80) < 0x40
-          && (c >= 0xf1 || s[1] >= 0x90)))
-      return RET_ILSEQ;
-    *pwc = ((ucs4_t) (c & 0x07) << 18)
-           | ((ucs4_t) (s[1] ^ 0x80) << 12)
-           | ((ucs4_t) (s[2] ^ 0x80) << 6)
-           | (ucs4_t) (s[3] ^ 0x80);
-    return 4;
-  } else if (c < 0xfc && sizeof(ucs4_t)*8 >= 32) {
-    if (n < 5)
-      return RET_TOOFEW(0);
-    if (!((s[1] ^ 0x80) < 0x40 && (s[2] ^ 0x80) < 0x40
-          && (s[3] ^ 0x80) < 0x40 && (s[4] ^ 0x80) < 0x40
-          && (c >= 0xf9 || s[1] >= 0x88)))
-      return RET_ILSEQ;
-    *pwc = ((ucs4_t) (c & 0x03) << 24)
-           | ((ucs4_t) (s[1] ^ 0x80) << 18)
-           | ((ucs4_t) (s[2] ^ 0x80) << 12)
-           | ((ucs4_t) (s[3] ^ 0x80) << 6)
-           | (ucs4_t) (s[4] ^ 0x80);
-    return 5;
-  } else if (c < 0xfe && sizeof(ucs4_t)*8 >= 32) {
-    if (n < 6)
-      return RET_TOOFEW(0);
-    if (!((s[1] ^ 0x80) < 0x40 && (s[2] ^ 0x80) < 0x40
-          && (s[3] ^ 0x80) < 0x40 && (s[4] ^ 0x80) < 0x40
-          && (s[5] ^ 0x80) < 0x40
-          && (c >= 0xfd || s[1] >= 0x84)))
-      return RET_ILSEQ;
-    *pwc = ((ucs4_t) (c & 0x01) << 30)
-           | ((ucs4_t) (s[1] ^ 0x80) << 24)
-           | ((ucs4_t) (s[2] ^ 0x80) << 18)
-           | ((ucs4_t) (s[3] ^ 0x80) << 12)
-           | ((ucs4_t) (s[4] ^ 0x80) << 6)
-           | (ucs4_t) (s[5] ^ 0x80);
-    return 6;
-  } else
-    return RET_ILSEQ;
-}
-
-int ch_utf8_length(const char* s)
+int
+utf8_mbtowc(wchar_t *p, const char *s, int n)
 {
-    int res;
-    ucs4_t ch;
+	wchar_t l;
+	int c0, c, nc;
+	struct utf8_table *t;
 
-    res = utf8_mbtowc(&ch, (const unsigned char*)s, strlen(s));
-    if(res <= 0)
-        return 0;
-    return res;
-}
-
-int ch_utf8(const char* s)
-{
-    int res;
-    ucs4_t ch;
-
-    res = utf8_mbtowc(&ch, (const unsigned char*)s, strlen(s));
-    if(res <= 0)
-        return 0;
-    return ch;
+	nc = 0;
+	c0 = *s;
+	l = c0;
+	for (t = utf8_table; t->cmask; t++) {
+		nc++;
+		if ((c0 & t->cmask) == t->cval) {
+			l &= t->lmask;
+			if (l < t->lval)
+				return -nc;
+			*p = l;
+			return nc;
+		}
+		if (n <= nc)
+			return 0;
+		s++;
+		c = (*s ^ 0x80) & 0xFF;
+		if (c & 0xC0)
+			return -nc;
+		l = (l << 6) | c;
+	}
+	return -nc;
 }
 
 int getCharID(const char* s, void* pFont)
@@ -402,7 +348,7 @@ int getCharID(const char* s, void* pFont)
 	unsigned i, unicode;
 	GRFont *gfont = (GRFont*) pFont;
 	if (!gfont)  gfont = gr_font;
-	unicode = ch_utf8(s);
+	utf8_mbtowc(&unicode, s, strlen(s));
 	for (i = 0; i < gfont->count; i++) 
 	{
 		if (unicode == gfont->unicodemap[i])
@@ -415,13 +361,14 @@ int gr_measureEx(const char *s, void* font)
 {
     GRFont* fnt = (GRFont*) font;
     int n, l, off;
+    wchar_t ch;
 
     if (!fnt)   fnt = gr_font;
 
     n = 0;
     off = 0;
     while(*(s + off)) {
-        l = ch_utf8_length(s + off);
+        l = utf8_mbtowc(&ch, s+off, strlen(s + off));
 		n += fnt->cwidth[getCharID(s+off,font)];
         off += l;
     }
@@ -433,6 +380,7 @@ int gr_textEx(int x, int y, const char *s, void* pFont)
     GGLContext *gl = gr_context;
     GRFont *gfont = (GRFont*) pFont;
     unsigned off, width, height, n;
+    wchar_t ch;
 
     /* Handle default font */
     if (!gfont)  gfont = gr_font;
@@ -450,7 +398,7 @@ int gr_textEx(int x, int y, const char *s, void* pFont)
             continue;
         }
 		off = getCharID(s,pFont);
-        n = ch_utf8_length(s);
+        n = utf8_mbtowc(&ch, s, strlen(s));
         if(n <= 0)
             break;
         s += n;
@@ -474,6 +422,7 @@ int gr_textExW(int x, int y, const char *s, void* pFont, int max_width)
     GGLContext *gl = gr_context;
     GRFont *gfont = (GRFont*) pFont;
     unsigned off, width, height, n;
+    wchar_t ch;
 
     /* Handle default font */
     if (!gfont)  gfont = gr_font;
@@ -491,7 +440,7 @@ int gr_textExW(int x, int y, const char *s, void* pFont, int max_width)
             continue;
         }
 		off = getCharID(s,pFont);
-        n = ch_utf8_length(s);
+        n = utf8_mbtowc(&ch, s, strlen(s));
         if(n <= 0)
             break;
         s += n;
@@ -523,6 +472,7 @@ int gr_textExWH(int x, int y, const char *s, void* pFont, int max_width, int max
     GRFont *gfont = (GRFont*) pFont;
     unsigned off, width, height, n;
     int rect_x, rect_y;
+    wchar_t ch;
 
     /* Handle default font */
     if (!gfont)  gfont = gr_font;
@@ -540,7 +490,7 @@ int gr_textExWH(int x, int y, const char *s, void* pFont, int max_width, int max
             continue;
         }
 		off = getCharID(s,pFont);
-        n = ch_utf8_length(s);
+        n = utf8_mbtowc(&ch, s, strlen(s));
         if(n <= 0)
             break;
         s += n;
@@ -574,6 +524,7 @@ int twgr_text(int x, int y, const char *s)
     GGLContext *gl = gr_context;
     GRFont *gfont = gr_font;
     unsigned off, width, height, n;
+    wchar_t ch;
 
     y -= gfont->ascent;
 
@@ -588,7 +539,7 @@ int twgr_text(int x, int y, const char *s)
             continue;
         }
 		off = getCharID(s,NULL);
-        n = ch_utf8_length(s);
+        n = utf8_mbtowc(&ch, s, strlen(s));
         if(n <= 0)
             break;
         s += n;
@@ -708,7 +659,7 @@ void* gr_loadFont(const char* fontName)
     ftex->version = sizeof(*ftex);
     ftex->format = GGL_PIXEL_FORMAT_A_8;
     font->count = gr_font->count;
-    font->unicodemap = unicodemap;
+    font->unicodemap = gr_font->unicodemap;
 	font->cwidth = cwidth;
 	font->cheight = cheight;
     font->fontdata = font_data;
@@ -718,38 +669,37 @@ void* gr_loadFont(const char* fontName)
 
 void* gr_loadFont_cn(const char* fontName)
 {
-	gzFile fd;
+	FILE *pipe;
+	int fd;
     GRFont *font = 0;
     GGLSurface *ftex;
     unsigned char *cwidth, *cheight, *width, *height, *commonsign;
     unsigned *unicode, *common, *extend, *fontindex, count, cnt, i, j, repeat, font_count;
     void** font_data;
 	void** font_data_tmp;
+	char cmd[128];
 
-	fd = gzopen(fontName,"rb");
-    if (fd == NULL)
-    {
-        char tmp[128];
-        sprintf(tmp, "/res/fonts/%s.dat", fontName);
-        fd = gzopen(tmp, "rb");
-        if (fd == NULL)
-            return NULL;
-    }
+	if (access(fontName,F_OK))
+		sprintf(cmd, "pigz -d -c '/res/fonts/%s.dat'", fontName);
+	else
+		sprintf(cmd, "pigz -d -c '%s'", fontName);
+	pipe = popen(cmd, "r");
+	fd = fileno(pipe);
     font = calloc(sizeof(*font), 1);
     ftex = &font->texture;
-    gzread(fd, &count, sizeof(unsigned));
+    read(fd, &count, sizeof(unsigned));
 	unicode = malloc(count*sizeof(unsigned));
-    gzread(fd, unicode, count*sizeof(unsigned));
-	common = malloc(UNICODE_NUM*sizeof(unsigned));
-	commonsign = malloc(UNICODE_NUM);
-	memset(commonsign, 0, UNICODE_NUM);
+    read(fd, unicode, count*sizeof(unsigned));
+	common = malloc(gr_font->count*sizeof(unsigned));
+	commonsign = malloc(gr_font->count);
+	memset(commonsign, 0, gr_font->count);
 	extend = malloc(count*sizeof(unsigned));
     repeat = 0;
     cnt = 0;
 	for (i=0; i < count;i++) {
 		int tmp = 0;
-		for (j=0; j < UNICODE_NUM;j++) {
-			if (unicode[i] == unicodemap[j]) {
+		for (j=0; j < gr_font->count;j++) {
+			if (unicode[i] == gr_font->unicodemap[j]) {
 				commonsign[j] = 1;
 				common[j] = i;
 				repeat++;
@@ -761,26 +711,26 @@ void* gr_loadFont_cn(const char* fontName)
 			cnt++;
 		}
 	}
-	font_count = count+UNICODE_NUM-repeat;
+	font_count = count+gr_font->count-repeat;
 	fontindex = malloc(font_count*sizeof(unsigned));
-	for(i=UNICODE_NUM,j=0;j<cnt;i++,j++)
+	for(i=gr_font->count,j=0;j<cnt;i++,j++)
 		fontindex[i] = unicode[extend[j]];
     width = malloc(count);
     height = malloc(count);
-    gzread(fd, width, count);
-    gzread(fd, height, count);
+    read(fd, width, count);
+    read(fd, height, count);
     font_data_tmp = (void**)malloc(count * sizeof(void*));
     for (i=0; i < count;i++) {
     	font_data_tmp[i] = malloc(width[i]*height[i]);
 		memset(font_data_tmp[i], 0, width[i]*height[i]);
-		gzread(fd, font_data_tmp[i], width[i]*height[i]);
+		read(fd, font_data_tmp[i], width[i]*height[i]);
 	}
     cwidth = malloc(font_count);
     cheight = malloc(font_count);
     font_data = (void**)malloc(font_count * sizeof(void*));
 	for (i=0; i < font_count;i++) {
-		if (i<UNICODE_NUM) {
-			fontindex[i] = unicodemap[i];
+		if (i < gr_font->count) {
+			fontindex[i] = gr_font->unicodemap[i];
 			if (commonsign[i]) {
 				cwidth[i] = width[common[i]];
 				cheight[i] = height[common[i]];
@@ -808,7 +758,7 @@ void* gr_loadFont_cn(const char* fontName)
 			}
 		}
 	}
-    gzclose(fd);
+    fclose(pipe);
     ftex->version = sizeof(*ftex);
     ftex->format = GGL_PIXEL_FORMAT_A_8;
     font->count = font_count;
@@ -899,7 +849,7 @@ static void gr_init_font(void)
     ftex->format = GGL_PIXEL_FORMAT_A_8;
 
 	gr_font->count = font.count;
-    gr_font->unicodemap = unicodemap;
+    gr_font->unicodemap = font.unicodemap;
     gr_font->cwidth = width;
     gr_font->cheight = height;
     gr_font->fontdata = font_data;
